@@ -354,6 +354,28 @@ public:
                                      std::vector<std::pair<std::string, std::string>> const* named_args,
                                      std::string_view log_message, std::string_view log_statement) override
   {
+      bool collapse_repetitions{false};
+
+      if (
+              _prev.thread_id == thread_id &&
+              _prev.thread_name == thread_name &&
+              _prev.process_id == process_id &&
+              _prev.logger_name == logger_name &&
+              _prev.log_level == log_level &&
+              (named_args? _prev.named_args == *named_args : _prev.named_args.empty()) &&
+              _prev.log_message == log_message
+         )
+      {
+          if (_repetition_count++ >= 3)
+          {
+              collapse_repetitions = true;
+          }
+      }
+      else
+      {
+          _repetition_count = 0;
+      }
+
 #if defined(_WIN32)
     if (_console_colours.using_colours())
     {
@@ -398,15 +420,44 @@ public:
       safe_fwrite(colour_code.data(), sizeof(char), colour_code.size(), _file);
     }
 
-    // Write record to file
-    StreamSink::write_log(log_metadata, log_timestamp, thread_id, thread_name, process_id,
-                          logger_name, log_level, named_args, log_message, log_statement);
+    if (collapse_repetitions)
+    {
+        std::string log_statement_no_nl{log_statement.substr(0, log_statement.find('\n'))};
+        std::string new_log_statement = "\033[1A\r" + log_statement_no_nl + " (" + std::to_string(_repetition_count) + "x)\n";
+
+        // Write record to file
+        StreamSink::write_log(log_metadata, log_timestamp, thread_id, thread_name, process_id,
+                              logger_name, log_level, named_args, log_message, new_log_statement);
+    }
+    else
+    {
+        // Write record to file
+        StreamSink::write_log(log_metadata, log_timestamp, thread_id, thread_name, process_id,
+                              logger_name, log_level, named_args, log_message, log_statement);
+    }
 
     if (_console_colours.can_use_colours())
     {
       safe_fwrite(ConsoleColours::reset.data(), sizeof(char), ConsoleColours::reset.size(), _file);
     }
 #endif
+
+    _prev.thread_id = thread_id;
+    _prev.thread_name = thread_name;
+    _prev.process_id = process_id;
+    _prev.logger_name = logger_name;
+    _prev.log_level = log_level;
+
+    if (named_args)
+    {
+        _prev.named_args = *named_args;
+    }
+    else
+    {
+        _prev.named_args.clear();
+    }
+
+    _prev.log_message = log_message;
   }
 
   /**
@@ -454,5 +505,19 @@ private:
 protected:
   // protected in case someone wants to derive from this class and create a custom one, e.g. for json logging to stdout
   ConsoleColours _console_colours;
+
+private:
+  struct PreviousLog
+  {
+      std::string thread_id;
+      std::string thread_name;
+      std::string process_id;
+      std::string logger_name;
+      LogLevel log_level;
+      std::vector<std::pair<std::string, std::string>> named_args;
+      std::string log_message;
+  } _prev;
+
+  size_t _repetition_count{0};
 };
 } // namespace quill
